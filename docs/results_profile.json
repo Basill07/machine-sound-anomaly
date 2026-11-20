@@ -1,0 +1,23 @@
+{
+  "method": "profile",
+  "threshold": 5.792042574278013,
+  "false_alarm_rate": 0.05,
+  "faults": {
+    "bearing": {
+      "auc": 0.881,
+      "pauc": 0.806,
+      "detected": 0.725
+    },
+    "imbalance": {
+      "auc": 0.987,
+      "pauc": 0.954,
+      "detected": 0.95
+    },
+    "rattle": {
+      "auc": 1.0,
+      "pauc": 1.0,
+      "detected": 1.0
+    }
+  },
+  "overall_auc": 0.956
+}

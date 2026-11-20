@@ -1,0 +1,11 @@
+numpy
+librosa>=0.10
+soundfile
+scikit-learn>=1.3
+torch            # only for the autoencoder baseline
+matplotlib
+sounddevice      # microphone (record / monitor)
+fastapi
+uvicorn
+python-multipart
+pytest

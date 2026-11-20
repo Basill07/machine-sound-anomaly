@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Machine Sound Health</title>
+<style>
+  :root { --bg:#0e1316; --panel:#161d22; --line:#24303a; --text:#e6edf2; --muted:#8a9aa6;
+          --ok:#3fb8af; --watch:#edae49; --alarm:#e5484d; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family: system-ui, -apple-system, Segoe UI, sans-serif; }
+  main { max-width: 900px; margin:0 auto; padding: 28px 20px 60px; }
+  h1 { margin:0; font-size:22px; }
+  .sub { color:var(--muted); font-size:14px; margin:4px 0 22px; }
+  .grid { display:grid; grid-template-columns: 220px 1fr; gap:14px; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px; }
+  .label { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.06em; }
+  #health { font-size:64px; font-weight:700; line-height:1; margin:10px 0 8px; font-variant-numeric: tabular-nums; }
+  .pill { display:inline-block; padding:4px 10px; border-radius:999px; font-size:13px; font-weight:600; background:#222c33; color:var(--muted); }
+  .pill.ok { background:rgba(63,184,175,.15); color:var(--ok); }
+  .pill.watch { background:rgba(237,174,73,.15); color:var(--watch); }
+  .pill.alarm { background:rgba(229,72,77,.18); color:var(--alarm); }
+  #score { color:var(--muted); font-size:13px; margin-top:10px; font-variant-numeric: tabular-nums; }
+  canvas { width:100%; height:200px; display:block; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin: 18px 0 4px; }
+  button, select { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:10px 14px; font-size:15px; cursor:pointer; }
+  button:hover { border-color: var(--ok); }
+  button.on { background: var(--ok); color:#06201d; border-color: var(--ok); }
+  #hints { margin:10px 0 0; padding-left:18px; color:var(--text); font-size:14px; }
+  #hints:empty::before { content:"No unusual frequency bands."; color:var(--muted); margin-left:-18px; }
+  #status { color:var(--muted); font-size:13px; min-height:18px; }
+  .err { color: var(--alarm) !important; }
+  #specImg { width:100%; border-radius:8px; margin-top:10px; display:none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Machine Sound Health</h1>
+  <p class="sub" id="modelInfo">Learns what a healthy machine sounds like and warns when the sound changes.</p>
+
+  <div class="grid">
+    <div class="card">
+      <div class="label">Health</div>
+      <div id="health">--</div>
+      <span class="pill" id="pill">idle</span>
+      <div id="score"></div>
+    </div>
+    <div class="card">
+      <div class="label">Health over time (alarm below 50)</div>
+      <canvas id="chart" width="1200" height="400"></canvas>
+    </div>
+  </div>
+
+  <div class="row">
+    <button id="micBtn">🎙️ Listen to microphone</button>
+    <select id="demoSel"></select>
+    <button id="demoBtn">▶ Play demo recording</button>
+    <button id="stopBtn">■ Stop</button>
+  </div>
+  <div id="status"></div>
+
+  <div class="card" style="margin-top:14px">
+    <div class="label">What sounds different</div>
+    <ul id="hints"></ul>
+  </div>
+
+  <div class="card" style="margin-top:14px">
+    <div class="label">Check a recording</div>
+    <div class="row" style="margin-top:10px">
+      <input type="file" id="fileInput" accept="audio/*,.wav,.mp3,.flac,.ogg">
+    </div>
+    <div id="fileResult" style="font-size:14px"></div>
+    <img id="specImg" alt="Spectrogram of the uploaded recording">
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = t => String(t).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+const SR = 16000, WINDOW = 5 * SR, STEP_MS = 1000, MAX_POINTS = 90;
+let ctx = null, source = null, proc = null, micStream = null, timer = null;
+let samples = new Float32Array(0), history = [], busy = false;
+
+function status(t, err = false) { $("status").textContent = t; $("status").className = err ? "err" : ""; }
+
+function level(r) { return r.anomaly ? "alarm" : (r.health < 70 ? "watch" : "ok"); }
+
+function show(r) {
+  const lv = level(r);
+  $("health").textContent = Math.round(r.health);
+  $("health").style.color = `var(--${lv})`;
+  $("pill").className = "pill " + lv;
+  $("pill").textContent = { ok: "healthy", watch: "watch", alarm: "ALARM" }[lv];
+  $("score").textContent = `score ${r.score.toFixed(2)} · alarm above ${r.threshold.toFixed(2)}`;
+  $("hints").innerHTML = r.hints.map(h => `<li>${esc(h)}</li>`).join("");
+  history.push(r.health); if (history.length > MAX_POINTS) history.shift();
+  draw();
+}
+
+function draw() {
+  const c = $("chart"), g = c.getContext("2d"), W = c.width, H = c.height, pad = 30;
+  g.clearRect(0, 0, W, H);
+  const y = v => H - pad - (v / 100) * (H - 2 * pad);
+  g.strokeStyle = "#24303a"; g.lineWidth = 1; g.font = "22px system-ui"; g.fillStyle = "#8a9aa6";
+  [0, 50, 100].forEach(v => { g.beginPath(); g.moveTo(pad + 30, y(v)); g.lineTo(W - 10, y(v)); g.stroke(); g.fillText(v, 4, y(v) + 7); });
+  g.setLineDash([10, 8]); g.strokeStyle = "#e5484d"; g.beginPath(); g.moveTo(pad + 30, y(50)); g.lineTo(W - 10, y(50)); g.stroke(); g.setLineDash([]);
+  if (history.length < 2) return;
+  const x = i => pad + 30 + (i / (MAX_POINTS - 1)) * (W - pad - 40);
+  for (let i = 1; i < history.length; i++) {
+    const v = history[i];
+    g.strokeStyle = v < 50 ? "#e5484d" : v < 70 ? "#edae49" : "#3fb8af";
+    g.lineWidth = 5; g.beginPath(); g.moveTo(x(i - 1), y(history[i - 1])); g.lineTo(x(i), y(v)); g.stroke();
+  }
+}
+
+function append(chunk) {
+  const merged = new Float32Array(Math.min(samples.length + chunk.length, WINDOW));
+  const keep = merged.length - chunk.length;
+  if (keep > 0) merged.set(samples.subarray(samples.length - keep));
+  merged.set(chunk.subarray(Math.max(0, chunk.length - merged.length)), Math.max(0, keep));
+  samples = merged;
+}
+
+async function scoreWindow() {
+  if (busy || samples.length < WINDOW) { if (samples.length < WINDOW) status(`Listening… ${Math.ceil((WINDOW - samples.length) / SR)}s until the first score`); return; }
+  busy = true;
+  try {
+    const res = await fetch("/score-pcm", { method: "POST", body: samples.slice().buffer });
+    const r = await res.json();
+    if (!res.ok) throw new Error(r.detail || res.statusText);
+    if (r.silent) { status("No sound. Is the machine running and the microphone close to it?"); }
+    else { show(r); status(""); }
+  } catch (e) { status(e.message, true); }
+  busy = false;
+}
+
+async function start(makeSource, label) {
+  stop();
+  ctx = new AudioContext({ sampleRate: SR });
+  source = await makeSource(ctx);
+  proc = ctx.createScriptProcessor(4096, 1, 1);
+  proc.onaudioprocess = e => append(new Float32Array(e.inputBuffer.getChannelData(0)));
+  source.connect(proc); proc.connect(ctx.destination);
+  history = []; samples = new Float32Array(0); draw();
+  timer = setInterval(scoreWindow, STEP_MS);
+  status(label);
+}
+
+function stop() {
+  clearInterval(timer); timer = null;
+  try { source && source.stop && source.stop(); } catch (e) {}
+  try { source && source.disconnect(); proc && proc.disconnect(); } catch (e) {}
+  if (micStream) micStream.getTracks().forEach(t => t.stop());
+  if (ctx) ctx.close();
+  ctx = source = proc = micStream = null;
+  $("micBtn").classList.remove("on");
+}
+
+$("micBtn").onclick = async () => {
+  try {
+    await start(async c => {
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+      return c.createMediaStreamSource(micStream);
+    }, "Listening to the microphone…");
+    $("micBtn").classList.add("on");
+  } catch (e) { status("Microphone not available: " + e.message, true); }
+};
+
+$("demoBtn").onclick = async () => {
+  const name = $("demoSel").value;
+  if (!name) return;
+  await start(async c => {
+    const buf = await c.decodeAudioData(await (await fetch("/demo/" + encodeURIComponent(name))).arrayBuffer());
+    const s = c.createBufferSource(); s.buffer = buf;
+    s.connect(c.destination);            // you hear the machine too
+    s.onended = () => { clearInterval(timer); timer = null; setTimeout(() => { stop(); status("Demo finished."); }, 300); };
+    s.start();
+    return s;
+  }, `Playing ${name}: healthy at first, then a fault slowly develops…`);
+};
+
+$("stopBtn").onclick = () => { stop(); status("Stopped."); };
+
+$("fileInput").onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  $("fileResult").textContent = "Analysing…"; $("specImg").style.display = "none";
+  const form = new FormData(); form.append("file", f);
+  const res = await fetch("/score-file", { method: "POST", body: form });
+  const r = await res.json();
+  if (!res.ok) { $("fileResult").innerHTML = `<span class="err">${esc(r.detail)}</span>`; return; }
+  const lv = level(r);
+  $("fileResult").innerHTML = `<p><b style="color:var(--${lv})">${{ ok: "Healthy", watch: "Healthy, but close to the limit", alarm: "Anomaly detected" }[lv]}</b>
+    · health ${Math.round(r.health)}/100 · score ${r.score.toFixed(2)}</p>` +
+    (r.hints.length ? "<ul>" + r.hints.map(h => `<li>${esc(h)}</li>`).join("") + "</ul>" : "");
+  $("specImg").src = r.spectrogram; $("specImg").style.display = "block";
+};
+
+fetch("/info").then(r => r.json()).then(i => {
+  $("modelInfo").textContent = `Model "${i.model}" (${i.method}). Learns what a healthy machine sounds like and warns when the sound changes.`;
+  $("demoSel").innerHTML = i.demos.map(d => `<option>${esc(d)}</option>`).join("") || "<option value=''>no demo files</option>";
+}).catch(() => status("No trained model yet. Run: python scripts/train.py", true));
+draw();
+</script>
+</body>
+</html>

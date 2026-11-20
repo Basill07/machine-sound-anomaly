@@ -1,0 +1,23 @@
+{
+  "method": "autoencoder",
+  "threshold": 0.5856893075108528,
+  "false_alarm_rate": 0.0,
+  "faults": {
+    "bearing": {
+      "auc": 0.739,
+      "pauc": 0.658,
+      "detected": 0.175
+    },
+    "imbalance": {
+      "auc": 0.571,
+      "pauc": 0.539,
+      "detected": 0.05
+    },
+    "rattle": {
+      "auc": 1.0,
+      "pauc": 1.0,
+      "detected": 1.0
+    }
+  },
+  "overall_auc": 0.77
+}
